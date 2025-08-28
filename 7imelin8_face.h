@@ -28,7 +28,9 @@
 #include "movement.h"
 
 typedef struct {
-    int8_t last_bucket; // 0..11, -1 = uninitialized
+    int8_t last_bucket;    // 0..11, -1 = uninitialized
+    uint8_t last_position; // Track last position to clear only what's needed
+    int8_t last_minute;    // Track minute to reduce RTC reads
 } timelin8_state_t;
 
 void timelin8_face_setup(movement_settings_t *settings, uint8_t watch_face_index, void ** context_ptr);

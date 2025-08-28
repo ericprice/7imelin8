@@ -27,7 +27,10 @@
 #include "watch.h"
 #include "watch_private_display.h"
 
-// We will use positions 4-9 (HH:MM:SS) and the left/right vertical segments:
+// Timeline face: Shows daily progress across the 6 time digit positions
+// Moves through 12 positions (6 digits × 2 sides) over 24 hours
+// Each position represents 2 hours of the day
+// We use positions 4-9 (HH:MM:SS) and the left/right vertical segments:
 // F (top-left) and E (bottom-left), B (top-right) and C (bottom-right).
 // From Character_Set mapping semantics: A=0, B=1, C=2, D=3, E=4, F=5, G=6.
 
@@ -70,14 +73,21 @@ void timelin8_face_setup(movement_settings_t *settings, uint8_t watch_face_index
     if (*context_ptr == NULL) {
         timelin8_state_t *state = (timelin8_state_t *)malloc(sizeof(timelin8_state_t));
         state->last_bucket = -1;
+        state->last_position = 255; // Invalid position
+        state->last_minute = -1;
         *context_ptr = state;
     }
 }
 
 void timelin8_face_activate(movement_settings_t *settings, void *context) {
-    (void) settings; (void) context;
+    (void) settings;
+    timelin8_state_t *state = (timelin8_state_t *)context;
     if (watch_tick_animation_is_running()) watch_stop_tick_animation();
-    // Default 1 Hz tick is fine; we update every 5 seconds.
+    // Since we only update every 2 hours, we can use 1Hz and check less frequently
+    // We'll wake up once per minute to ensure we catch the hour change reliably
+    movement_request_tick_frequency(1);
+    state->last_bucket = -1; // Force update
+    state->last_minute = -1;
     clear_all_lr_segments();
 }
 
@@ -86,17 +96,47 @@ bool timelin8_face_loop(movement_event_t event, movement_settings_t *settings, v
     timelin8_state_t *state = (timelin8_state_t *)context;
     switch (event.event_type) {
         case EVENT_ACTIVATE:
+            state->last_bucket = -1; // Force update on activate
+            // Fall through
         case EVENT_TICK:
         case EVENT_LOW_ENERGY_UPDATE: {
+            // Skip most ticks - only check once per minute for efficiency
+            // Since we update every 2 hours, checking once per minute is plenty
             watch_date_time now = watch_rtc_get_date_time();
-            uint8_t bucket = now.unit.second / 5; // 0..11
+            
+            if (event.event_type == EVENT_TICK && now.unit.minute == state->last_minute) {
+                break; // Skip if minute hasn't changed
+            }
+            state->last_minute = now.unit.minute;
+            
+            // Divide 24 hours into 12 buckets (2 hours each)
+            // 00:00-01:59 = bucket 0, 02:00-03:59 = bucket 1, ... 22:00-23:59 = bucket 11
+            uint8_t bucket = now.unit.hour / 2; // 0..11
+            
+            // Only update when bucket changes (every 2 hours)
             if (bucket != state->last_bucket) {
                 state->last_bucket = bucket;
-                clear_all_lr_segments();
-                // Map bucket 0..11 to (position 4..9, left/right)
+                
+                // Clear only the previous segment position for efficiency
+                if (state->last_position < 10) {
+                    // Clear the last lit segment
+                    uint64_t segmap = Segment_Map[state->last_position];
+                    for (uint8_t i = 0; i < 8; i++) {
+                        uint8_t com = (segmap & 0xFF) >> 6;
+                        if (com > 2) { segmap >>= 8; continue; }
+                        uint8_t seg = segmap & 0x3F;
+                        if (i == 1 || i == 2 || i == 4 || i == 5) {
+                            watch_clear_pixel(com, seg);
+                        }
+                        segmap >>= 8;
+                    }
+                }
+                
+                // Set new segment
                 uint8_t digit_index = bucket / 2;              // 0..5 => positions 4..9
-                bool right_side = (bucket % 2) == 1;            // odd => right, even => left
+                bool right_side = (bucket % 2) == 1;           // odd => right, even => left
                 uint8_t position = 4 + digit_index;            // 4..9
+                state->last_position = position;
                 set_lr_segments(position, !right_side);
             }
             break;
